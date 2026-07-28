@@ -1,0 +1,7 @@
+# only pull in version updates that were released more than a week ago (low-pass filter for quickly-retracted releases)
+cooldown: 7d
+
+# other binary versions are inherited from the .binny.yaml file in the anchore/go-make repo
+# (version pinned in .make/go.mod). If you need to override a tool version, add an entry here
+# and go-make will prefer the local definition over the shared one.
+tools: []

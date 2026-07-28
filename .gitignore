@@ -1,0 +1,52 @@
+# local development tailoring
+go.work
+go.work.sum
+.tool-versions
+.mise.toml
+mise.toml
+.env
+.claude
+
+# tool and bin directories
+.tmp/
+bin/
+/bin
+/.bin
+/build
+.tool/
+/test/results
+/dist
+/snapshot
+/.tool
+/.task
+/.make/.make
+
+# changelog generation
+/CHANGELOG.md
+/VERSION.tmp
+/VERSION
+
+# IDE configuration
+.vscode/
+.idea/
+.history/
+
+# test related
+coverage.txt
+*.log
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# macOS Finder metadata
+.DS_Store
