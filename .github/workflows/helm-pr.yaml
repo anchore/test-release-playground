@@ -1,0 +1,37 @@
+# Dummy chart-bump PR opener for the release-pipeline sandbox loop.
+#
+# Dispatched by the release automation's GA handler when this repo (acting as
+# the sandbox's stand-in for a real product repo) publishes a GA Release.
+# Inputs (`product`, `version`) are exactly what that handler sends.
+#
+# In production this workflow would live on the Helm chart repo and open a
+# real PR that bumps the chart's appVersion. Here it just echoes what it would
+# do — enough to prove the GA dispatch fired.
+
+name: helm-pr
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: product repo the GA release originated from
+        required: true
+      version:
+        description: GA version (no v prefix)
+        required: true
+
+jobs:
+  simulate-chart-bump:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Simulate opening a chart-bump PR
+        env:
+          PRODUCT: ${{ inputs.product }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "sandbox helm-pr: would open a Helm chart bump PR"
+          echo "  product: ${PRODUCT}"
+          echo "  version: ${VERSION}"

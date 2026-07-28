@@ -1,0 +1,104 @@
+# Dummy RC tagger for the release-pipeline sandbox loop.
+#
+# What this exercises end-to-end:
+#   1. Job pins to `environment: rc-release`. GitHub parks the deployment and
+#      sends deployment_protection_rule.requested to the release automation.
+#   2. The automation evaluates policy, mints a contents:write token scoped to
+#      this repo, writes it as the TAG_TOKEN env secret, and approves the
+#      gate. The job then unblocks.
+#   3. This workflow pushes an RC tag using TAG_TOKEN, then triggers the
+#      dummy CircleCI pipeline (.circleci/config.yml) with the callback
+#      params. The Circle pipeline POSTs a signed callback to the automation,
+#      which dispatches tag-ga.yaml on success.
+#
+# Kept intentionally minimal — no build, no artifacts. Just enough to prove
+# the token flow and the RC→e2e→GA handoff.
+
+name: tag-rc
+
+permissions: {}
+
+concurrency:
+  group: tag-rc
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: base version (e.g. 1.2.3 — will be prefixed with v and suffixed with -rcN)
+        required: true
+      rc:
+        description: RC number (e.g. 1)
+        required: true
+        default: "1"
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    # rc-release is the gated env the release automation protects. Landing here
+    # is what triggers deployment_protection_rule.requested → provision →
+    # TAG_TOKEN secret → gate approved.
+    environment: rc-release
+    # No workflow-level GITHUB_TOKEN scopes granted. All privileged actions
+    # (git push, dispatch) use the short-lived TAG_TOKEN minted by the release
+    # automation.
+    permissions: {}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify TAG_TOKEN was minted
+        env:
+          TAG_TOKEN: ${{ secrets.TAG_TOKEN }}
+        run: |
+          if [ -z "${TAG_TOKEN:-}" ]; then
+            echo "TAG_TOKEN not set. The rc-release env gate should have written it as an env secret."
+            exit 1
+          fi
+          echo "TAG_TOKEN present."
+
+      - name: Push RC tag
+        env:
+          TAG_TOKEN: ${{ secrets.TAG_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          RC: ${{ inputs.rc }}
+        run: |
+          set -eu
+          TAG="v${VERSION}-rc${RC}"
+          echo "pushing $TAG"
+          git tag "$TAG"
+          git -c http.extraheader="AUTHORIZATION: bearer ${TAG_TOKEN}" \
+            push origin "$TAG"
+          echo "RC_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Trigger dummy e2e CircleCI pipeline
+        env:
+          CIRCLECI_TOKEN: ${{ secrets.CIRCLECI_TOKEN }}
+        run: |
+          set -eu
+          # Fire the sandbox CircleCI project on this same repo with the
+          # callback params set. Its notify job POSTs a signed success
+          # callback to the release automation, which dispatches tag-ga.yaml.
+          curl -fsS -X POST \
+            -H "circle-token: ${CIRCLECI_TOKEN}" \
+            -H "content-type: application/json" \
+            "https://circleci.com/api/v2/project/github/${GITHUB_REPOSITORY}/pipeline" \
+            -d "$(jq -cn \
+              --arg r "${GITHUB_REPOSITORY##*/}" \
+              --arg t "${RC_TAG}" \
+              '{branch:"main", parameters:{CALLBACK_PRODUCT_REPO:$r, CALLBACK_RC_TAG:$t}}')"
+
+      - name: Self-revoke TAG_TOKEN
+        if: always()
+        env:
+          TAG_TOKEN: ${{ secrets.TAG_TOKEN }}
+        run: |
+          # Primary revocation. The automation's cleanup handler is the
+          # backstop on the deployment_status terminal event.
+          curl -fsS -X DELETE \
+            -H "Authorization: Bearer ${TAG_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/installation/token || true

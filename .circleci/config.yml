@@ -1,0 +1,97 @@
+# Dummy CircleCI pipeline for the release-pipeline sandbox loop.
+#
+# Triggered via API by tag-rc.yaml after it pushes an RC tag. The pipeline
+# runs a placeholder "e2e" job, then the notify job POSTs a signed HMAC
+# callback to the release automation, which validates it and dispatches
+# tag-ga.yaml on this same repo.
+#
+# In production this role is played by the real e2e pipeline's config — same
+# shape, same HMAC scheme, same context var names — so the sandbox exercises
+# the identical code path.
+#
+# Requires a CircleCI context named `release-pipeline-callback` with:
+#   - RELEASE_CALLBACK_URL     (callback route on the release automation)
+#   - RELEASE_CALLBACK_SECRET  (shared HMAC secret)
+version: 2.1
+
+parameters:
+  # Set by tag-rc.yaml's API trigger. Empty defaults let the pipeline be
+  # manually re-run without accidentally firing a callback.
+  CALLBACK_PRODUCT_REPO:
+    type: string
+    default: ""
+  CALLBACK_RC_TAG:
+    type: string
+    default: ""
+
+jobs:
+  fake-e2e:
+    docker:
+      - image: cimg/base:stable
+    resource_class: small
+    steps:
+      - run:
+          name: Simulated e2e test (always passes)
+          command: |
+            echo "sandbox e2e: pretending to test << pipeline.parameters.CALLBACK_PRODUCT_REPO >> at << pipeline.parameters.CALLBACK_RC_TAG >>"
+
+  # Mirror of the real e2e pipeline's notify job. Kept in sync by convention —
+  # if the HMAC scheme, header name, or payload shape change in one, update
+  # the other.
+  # notify-release-automation:
+  #   docker:
+  #     - image: cimg/base:stable
+  #   resource_class: small
+  #   # Egress from CircleCI's known-IPs pool so the automation's WAF (which
+  #   # now pins the callback path to that set) admits us. Scoped to this one
+  #   # tiny job to minimize the per-GB surcharge (Performance-plan feature —
+  #   # 450 credits per 1 GB).
+  #   circleci_ip_ranges: true
+  #   # Pipeline parameters aren't exposed to steps as env vars automatically,
+  #   # so materialize them into the shell env once at the top of each step
+  #   # via CircleCI's template syntax.
+  #   steps:
+  #     - run:
+  #         name: Skip when no callback configured
+  #         command: |
+  #           CALLBACK_PRODUCT_REPO="<< pipeline.parameters.CALLBACK_PRODUCT_REPO >>"
+  #           CALLBACK_RC_TAG="<< pipeline.parameters.CALLBACK_RC_TAG >>"
+  #           if [ -z "$CALLBACK_PRODUCT_REPO" ] || [ -z "$CALLBACK_RC_TAG" ]; then
+  #             echo "CALLBACK_PRODUCT_REPO or CALLBACK_RC_TAG unset — skipping (manual re-run)."
+  #             circleci-agent step halt
+  #           fi
+  #     - run:
+  #         name: POST signed success callback
+  #         command: |
+  #           set -eu
+  #           : "${RELEASE_CALLBACK_URL:?context var not set}"
+  #           : "${RELEASE_CALLBACK_SECRET:?context var not set}"
+
+  #           CALLBACK_PRODUCT_REPO="<< pipeline.parameters.CALLBACK_PRODUCT_REPO >>"
+  #           CALLBACK_RC_TAG="<< pipeline.parameters.CALLBACK_RC_TAG >>"
+  #           WORKFLOW_URL="https://app.circleci.com/pipelines/workflows/${CIRCLE_WORKFLOW_ID}"
+
+  #           BODY=$(jq -cn \
+  #             --arg r "$CALLBACK_PRODUCT_REPO" \
+  #             --arg t "$CALLBACK_RC_TAG" \
+  #             --arg u "$WORKFLOW_URL" \
+  #             '{product_repo:$r, rc_tag:$t, status:"success", workflow_url:$u}')
+
+  #           SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$RELEASE_CALLBACK_SECRET" | awk '{print $2}')
+
+  #           # -f fails on 4xx/5xx so a rejected callback surfaces as a job
+  #           # failure (bad signature → 401, bad product/rc_tag → 400).
+  #           curl -fsS -X POST "$RELEASE_CALLBACK_URL" \
+  #             -H "content-type: application/json" \
+  #             -H "circleci-signature: v1=${SIG}" \
+  #             --data "$BODY"
+
+workflows:
+  fake-e2e-then-callback:
+    jobs:
+      - fake-e2e
+      # - notify-release-automation:
+      #     requires:
+      #       - fake-e2e
+      #     context:
+      #       - release-pipeline-callback

@@ -1,0 +1,37 @@
+version: 2
+
+project_name: traceart
+
+release:
+  # If set to auto, will mark the release as not ready for production in case there is an indicator
+  # for this in the tag (e.g. v1.0.0-rc1). If true, always marks as not ready for production.
+  prerelease: auto
+
+  # If true, will not auto-publish the release. This allows us to review the changelog before publishing.
+  draft: false
+
+builds:
+  - id: linux-build
+    binary: traceart
+    dir: ./cmd/traceart
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags: |
+      -w
+      -s
+      -extldflags '-static'
+      -X main.version={{.Version}}
+      -X main.gitCommit={{.Commit}}
+      -X main.buildDate={{.Date}}
+      -X main.gitDescription={{.Summary}}
+
+archives:
+  - id: linux-archives
+    ids:
+      - linux-build

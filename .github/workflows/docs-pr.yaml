@@ -1,0 +1,36 @@
+# Dummy release-note PR opener for the release-pipeline sandbox loop.
+#
+# Dispatched by the release automation's GA handler, alongside helm-pr.yaml,
+# when this repo publishes a GA Release. Inputs match that handler's dispatch
+# payload.
+#
+# In production this workflow would live on the docs repo and open a real PR
+# that adds a release note. Here it just echoes.
+
+name: docs-pr
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: product repo the GA release originated from
+        required: true
+      version:
+        description: GA version (no v prefix)
+        required: true
+
+jobs:
+  simulate-release-note:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Simulate opening a release-note PR
+        env:
+          PRODUCT: ${{ inputs.product }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "sandbox docs-pr: would open a release-note PR"
+          echo "  product: ${PRODUCT}"
+          echo "  version: ${VERSION}"
