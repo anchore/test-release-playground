@@ -1,0 +1,57 @@
+# Triggers the dummy CircleCI e2e pipeline (.circleci/config.yml) when a
+# GitHub *pre-release* is published.
+#
+# Flow:
+#   1. A pre-release is published on this repo → GitHub fires
+#      release.prereleased.
+#   2. This workflow POSTs to CircleCI's v2 pipeline-trigger API for the
+#      release's tag, passing the CALLBACK_* pipeline parameters that
+#      config.yml expects.
+#   3. The Circle pipeline runs fake-e2e and (in production) POSTs a signed
+#      callback to the release automation, which dispatches the GA step.
+#
+# `prereleased` fires only for releases with the pre-release box checked, so
+# full/stable releases never trigger this. The explicit `if` below is a
+# belt-and-suspenders guard against event edge cases.
+#
+# Required repo config:
+#   - secrets.CIRCLECI_API_TOKEN   personal/project API token (Circle-Token)
+#   - vars.CIRCLECI_PROJECT_SLUG   e.g. gh/<org>/<repo> (defaults to gh/<this repo>)
+
+name: Trigger CircleCI e2e
+
+permissions: {}
+
+on:
+  release:
+    types: [prereleased]
+
+jobs:
+  trigger:
+    if: ${{ github.event.release.prerelease == true }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Trigger CircleCI pipeline for the pre-release tag
+        env:
+          CIRCLECI_API_TOKEN: ${{ secrets.CIRCLECI_API_TOKEN }}
+          PROJECT_SLUG: ${{ vars.CIRCLECI_PROJECT_SLUG || format('gh/{0}', github.repository) }}
+          PRODUCT_REPO: ${{ github.repository }}
+          RC_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          : "${CIRCLECI_API_TOKEN:?secret not set}"
+
+          # Pipeline parameters consumed by .circleci/config.yml. Triggering by
+          # `tag` (not `branch`) checks out the exact pre-release ref.
+          BODY=$(jq -cn \
+            --arg tag "$RC_TAG" \
+            --arg repo "$PRODUCT_REPO" \
+            '{tag:$tag, parameters:{CALLBACK_PRODUCT_REPO:$repo, CALLBACK_RC_TAG:$tag}}')
+
+          # -f makes the step fail on any 4xx/5xx from the API.
+          curl -fsS -X POST \
+            "https://circleci.com/api/v2/project/${PROJECT_SLUG}/pipeline" \
+            -H "Circle-Token: ${CIRCLECI_API_TOKEN}" \
+            -H "content-type: application/json" \
+            --data "$BODY"
