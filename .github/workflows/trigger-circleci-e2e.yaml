@@ -14,6 +14,9 @@
 # full/stable releases never trigger this. The explicit `if` below is a
 # belt-and-suspenders guard against event edge cases.
 #
+# It can also be run manually via workflow_dispatch, supplying the tag to
+# trigger the pipeline for (e.g. re-running e2e for an existing pre-release).
+#
 # Required config (the token lives in the `e2e` environment):
 #   - secrets.E2E_CI_API_KEY       personal/project API token (Circle-Token)
 #   - vars.CIRCLECI_PROJECT_SLUG   e.g. gh/<org>/<repo> (defaults to gh/<this repo>)
@@ -25,10 +28,17 @@ permissions: {}
 on:
   release:
     types: [prereleased]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: tag to trigger the CircleCI e2e pipeline for (e.g. v1.2.3-rc1)
+        required: true
 
 jobs:
   trigger:
-    if: ${{ github.event.release.prerelease == true }}
+    # Run for manual dispatches, or for release events only when the release
+    # is actually a pre-release.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == true }}
     runs-on: ubuntu-24.04
     environment: e2e
     permissions: {}
@@ -38,7 +48,8 @@ jobs:
           CIRCLECI_API_TOKEN: ${{ secrets.E2E_CI_API_KEY }}
           PROJECT_SLUG: ${{ vars.CIRCLECI_PROJECT_SLUG || format('gh/{0}', github.repository) }}
           PRODUCT_REPO: ${{ github.repository }}
-          RC_TAG: ${{ github.event.release.tag_name }}
+          # release events carry tag_name; manual runs supply it via input.
+          RC_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -eu
           : "${CIRCLECI_API_TOKEN:?secret not set}"
