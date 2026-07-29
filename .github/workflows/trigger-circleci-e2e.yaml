@@ -14,8 +14,8 @@
 # full/stable releases never trigger this. The explicit `if` below is a
 # belt-and-suspenders guard against event edge cases.
 #
-# Required repo config:
-#   - secrets.CIRCLECI_API_TOKEN   personal/project API token (Circle-Token)
+# Required config (the token lives in the `e2e` environment):
+#   - secrets.E2E_CI_API_KEY       personal/project API token (Circle-Token)
 #   - vars.CIRCLECI_PROJECT_SLUG   e.g. gh/<org>/<repo> (defaults to gh/<this repo>)
 
 name: Trigger CircleCI e2e
@@ -30,11 +30,12 @@ jobs:
   trigger:
     if: ${{ github.event.release.prerelease == true }}
     runs-on: ubuntu-24.04
+    environment: e2e
     permissions: {}
     steps:
       - name: Trigger CircleCI pipeline for the pre-release tag
         env:
-          CIRCLECI_API_TOKEN: ${{ secrets.CIRCLECI_API_TOKEN }}
+          CIRCLECI_API_TOKEN: ${{ secrets.E2E_CI_API_KEY }}
           PROJECT_SLUG: ${{ vars.CIRCLECI_PROJECT_SLUG || format('gh/{0}', github.repository) }}
           PRODUCT_REPO: ${{ github.repository }}
           RC_TAG: ${{ github.event.release.tag_name }}
