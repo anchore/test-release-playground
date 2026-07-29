@@ -14,7 +14,7 @@
 # Kept intentionally minimal — no build, no artifacts. Just enough to prove
 # the token flow and the RC→e2e→GA handoff.
 
-name: tag-rc
+name: Release Integrations
 
 permissions: {}
 
@@ -67,38 +67,14 @@ jobs:
           RC: ${{ inputs.rc }}
         run: |
           set -eu
-          TAG="v${VERSION}-rc${RC}"
+          # tolerate both `1.2.3` and `v1.2.3` inputs
+          TAG="v${VERSION#v}-rc${RC}"
           echo "pushing $TAG"
           git tag "$TAG"
-          git -c http.extraheader="AUTHORIZATION: bearer ${TAG_TOKEN}" \
-            push origin "$TAG"
+          # github's git endpoint rejects `bearer` headers; use a credential
+          # helper so the token stays in the env — never in argv, never on disk.
+          git -c credential.helper= \
+              -c credential.helper='!f() { echo username=x-access-token; echo "password=$TAG_TOKEN"; }; f' \
+              push origin "$TAG"
           echo "RC_TAG=$TAG" >> "$GITHUB_ENV"
 
-      - name: Trigger dummy e2e CircleCI pipeline
-        env:
-          CIRCLECI_TOKEN: ${{ secrets.CIRCLECI_TOKEN }}
-        run: |
-          set -eu
-          # Fire the sandbox CircleCI project on this same repo with the
-          # callback params set. Its notify job POSTs a signed success
-          # callback to the release automation, which dispatches tag-ga.yaml.
-          curl -fsS -X POST \
-            -H "circle-token: ${CIRCLECI_TOKEN}" \
-            -H "content-type: application/json" \
-            "https://circleci.com/api/v2/project/github/${GITHUB_REPOSITORY}/pipeline" \
-            -d "$(jq -cn \
-              --arg r "${GITHUB_REPOSITORY##*/}" \
-              --arg t "${RC_TAG}" \
-              '{branch:"main", parameters:{CALLBACK_PRODUCT_REPO:$r, CALLBACK_RC_TAG:$t}}')"
-
-      - name: Self-revoke TAG_TOKEN
-        if: always()
-        env:
-          TAG_TOKEN: ${{ secrets.TAG_TOKEN }}
-        run: |
-          # Primary revocation. The automation's cleanup handler is the
-          # backstop on the deployment_status terminal event.
-          curl -fsS -X DELETE \
-            -H "Authorization: Bearer ${TAG_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/installation/token || true
