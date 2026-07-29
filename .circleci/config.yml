@@ -89,9 +89,19 @@ jobs:
 workflows:
   fake-e2e-then-callback:
     jobs:
-      - fake-e2e
+      # tags are opt-in: circleci runs no workflows at all for a tag-triggered
+      # pipeline unless the jobs carry tag filters, which shows up in the UI as
+      # a pipeline stuck at "created" with no workflow. every job in the chain
+      # needs them, including ones that only `requires` another.
+      - fake-e2e:
+          filters:
+            tags:
+              only: /^v.*/
       # - notify-release-automation:
       #     requires:
       #       - fake-e2e
+      #     filters:
+      #       tags:
+      #         only: /^v.*/
       #     context:
       #       - release-pipeline-callback
