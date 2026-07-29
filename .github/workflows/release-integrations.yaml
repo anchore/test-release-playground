@@ -1,48 +1,43 @@
-# Dummy RC tagger for the release-pipeline sandbox loop.
+# Dummy tagger for the release-pipeline sandbox loop. Handles both RC and GA
+# versions — the version string decides which.
 #
 # What this exercises end-to-end:
-#   1. Job pins to `environment: rc-release`. GitHub parks the deployment and
-#      sends deployment_protection_rule.requested to the release automation.
+#   1. Job pins to a gated `environment`. GitHub parks the deployment and sends
+#      deployment_protection_rule.requested to the release automation.
 #   2. The automation evaluates policy, mints a contents:write token scoped to
 #      this repo, writes it as the TAG_TOKEN env secret, and approves the
 #      gate. The job then unblocks.
-#   3. This workflow pushes an RC tag using TAG_TOKEN, then triggers the
-#      dummy CircleCI pipeline (.circleci/config.yml) with the callback
-#      params. The Circle pipeline POSTs a signed callback to the automation,
-#      which dispatches tag-ga.yaml on success.
+#   3. This workflow pushes the tag using TAG_TOKEN and publishes a GitHub
+#      Release for it. Publishing fires release.published, which downstream
+#      automation reacts to.
 #
-# Kept intentionally minimal — no build, no artifacts. Just enough to prove
-# the token flow and the RC→e2e→GA handoff.
+# Kept intentionally minimal — no build, no assets, no notes. Just enough to
+# prove the token flow and the release event.
 
 name: Release Integrations
 
 permissions: {}
 
 concurrency:
-  group: tag-rc
+  group: release-integrations
   cancel-in-progress: false
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: base version (e.g. 1.2.3 — will be prefixed with v and suffixed with -rcN)
+        description: version to release, RC or GA (e.g. 1.2.3 or 1.2.3-rc1 — v prefix optional)
         required: true
-      rc:
-        description: RC number (e.g. 1)
-        required: true
-        default: "1"
 
 jobs:
   tag:
     runs-on: ubuntu-24.04
-    # rc-release is the gated env the release automation protects. Landing here
-    # is what triggers deployment_protection_rule.requested → provision →
-    # TAG_TOKEN secret → gate approved.
-    environment: rc-release
+    # each stage keeps its own gated env so the automation can apply different
+    # policy to an RC than to a GA.
+    environment: ${{ contains(inputs.version, '-rc') && 'rc-release' || 'ga-release' }}
     # No workflow-level GITHUB_TOKEN scopes granted. All privileged actions
-    # (git push, dispatch) use the short-lived TAG_TOKEN minted by the release
-    # automation.
+    # (git push, release create) use the short-lived TAG_TOKEN minted by the
+    # release automation.
     permissions: {}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -55,26 +50,47 @@ jobs:
           TAG_TOKEN: ${{ secrets.TAG_TOKEN }}
         run: |
           if [ -z "${TAG_TOKEN:-}" ]; then
-            echo "TAG_TOKEN not set. The rc-release env gate should have written it as an env secret."
+            echo "TAG_TOKEN not set. The env gate should have written it as an env secret."
             exit 1
           fi
           echo "TAG_TOKEN present."
 
-      - name: Push RC tag
+      - name: Push tag
         env:
           TAG_TOKEN: ${{ secrets.TAG_TOKEN }}
           VERSION: ${{ inputs.version }}
-          RC: ${{ inputs.rc }}
         run: |
           set -eu
           # tolerate both `1.2.3` and `v1.2.3` inputs
-          TAG="v${VERSION#v}-rc${RC}"
+          TAG="v${VERSION#v}"
           echo "pushing $TAG"
           git tag "$TAG"
-          # github's git endpoint rejects `bearer` headers; use a credential
-          # helper so the token stays in the env — never in argv, never on disk.
+
+          # github's git endpoint rejects `bearer` headers. a credential helper
+          # feeds the token to git over a pipe instead — note the single quotes:
+          # git stores the literal `$TAG_TOKEN`, and the helper's own shell
+          # expands it from the env at push time, so the value never lands in
+          # argv or in .git/config.
           git -c credential.helper= \
               -c credential.helper='!f() { echo username=x-access-token; echo "password=$TAG_TOKEN"; }; f' \
               push origin "$TAG"
-          echo "RC_TAG=$TAG" >> "$GITHUB_ENV"
 
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          # gh CLI reads GH_TOKEN for `gh release create`. contents:write is
+          # the permission releases live under — there is no separate release
+          # permission. the tag already exists at this point, so gh creates no
+          # ref and the workflows:write rule for ref-creating releases is moot.
+          GH_TOKEN: ${{ secrets.TAG_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          # empty release — the published event is the point, not the content.
+          # RCs are marked prerelease so they don't move the `latest` pointer.
+          case "$TAG" in
+            *-rc*) PRERELEASE=--prerelease ;;
+            *)     PRERELEASE= ;;
+          esac
+          gh release create "$TAG" --title "$TAG" --notes "" ${PRERELEASE}
