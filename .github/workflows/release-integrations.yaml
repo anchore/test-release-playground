@@ -8,8 +8,10 @@
 #      this repo, writes it as the TAG_TOKEN env secret, and approves the
 #      gate. The job then unblocks.
 #   3. This workflow pushes the tag using TAG_TOKEN and publishes a GitHub
-#      Release for it. Publishing fires release.published, which downstream
-#      automation reacts to.
+#      Release for it. An RC is cut from the triggering ref (main HEAD); a GA is
+#      cut from the SAME commit as the latest RC of that version — the commit
+#      e2e actually validated — not from a possibly-advanced main. Publishing
+#      fires release.published, which downstream automation reacts to.
 #
 # Kept intentionally minimal — no build, no assets, no notes. Just enough to
 # prove the token flow and the release event.
@@ -63,9 +65,32 @@ jobs:
           set -eu
           # tolerate both `1.2.3` and `v1.2.3` inputs
           TAG="v${VERSION#v}"
-          echo "pushing $TAG"
-          git tag "$TAG"
 
+          case "$TAG" in
+            *-rc*)
+              # RC: cut from the currently checked-out ref (main HEAD).
+              echo "tagging RC $TAG at HEAD"
+              git tag "$TAG"
+              ;;
+            *)
+              # GA: tag the SAME commit as the latest RC of this version. main may
+              # have advanced since that RC was cut and e2e-tested, so the GA must
+              # point at exactly the commit that was validated — not HEAD. checkout
+              # uses fetch-depth: 0, so every RC tag + its commit is already local.
+              # sort -V orders rc2 < rc10 correctly; the glob won't match other
+              # versions (e.g. v1.2.30-rc1) since the next char after $TAG is '-'.
+              LATEST_RC=$(git tag -l "${TAG}-rc*" | sort -V | tail -n1)
+              if [ -z "$LATEST_RC" ]; then
+                echo "no ${TAG}-rcN tag found; refusing to cut GA from an untested commit" >&2
+                exit 1
+              fi
+              RC_SHA=$(git rev-list -n1 "$LATEST_RC")
+              echo "tagging GA $TAG at $LATEST_RC ($RC_SHA)"
+              git tag "$TAG" "$RC_SHA"
+              ;;
+          esac
+
+          echo "pushing $TAG"
           # github's git endpoint rejects `bearer` headers. a credential helper
           # feeds the token to git over a pipe instead — note the single quotes:
           # git stores the literal `$TAG_TOKEN`, and the helper's own shell
