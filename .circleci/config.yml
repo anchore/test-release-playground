@@ -23,6 +23,15 @@ parameters:
   CALLBACK_RC_TAG:
     type: string
     default: ""
+  # EXPERIMENT: a distinctively-valued pipeline parameter used to test whether
+  # CircleCI's native workflow-completed webhook echoes pipeline parameters in
+  # its payload. The non-empty default means every run (push, manual, or API)
+  # carries it, so we can grep the Lambda's logged webhook body for the sentinel
+  # string. Expected result: ABSENT — native webhooks don't include pipeline
+  # parameters. Remove after the experiment concludes.
+  WEBHOOK_PROBE:
+    type: string
+    default: "PROBE-8f3d-look-for-me-in-the-webhook"
 
 jobs:
   fake-e2e:
@@ -34,6 +43,10 @@ jobs:
           name: Simulated e2e test (always passes)
           command: |
             echo "sandbox e2e: pretending to test << pipeline.parameters.CALLBACK_PRODUCT_REPO >> at << pipeline.parameters.CALLBACK_RC_TAG >>"
+            # EXPERIMENT cross-check: proves the probe param is set on this run,
+            # so if it's MISSING from the Lambda's logged webhook body we know
+            # that's the webhook dropping it, not the param being unset here.
+            echo "WEBHOOK_PROBE=<< pipeline.parameters.WEBHOOK_PROBE >>"
 
   # Mirror of the real e2e pipeline's notify job. Kept in sync by convention —
   # if the HMAC scheme, header name, or payload shape change in one, update
