@@ -56,10 +56,18 @@ jobs:
 
           # Pipeline parameters consumed by .circleci/config.yml. Triggering by
           # `tag` (not `branch`) checks out the exact pre-release ref.
+          #
+          # EXPERIMENT: WEBHOOK_PROBE is passed explicitly here (distinct from the
+          # config default) to test whether CircleCI's native webhook echoes
+          # explicitly-passed pipeline parameters. In the captured payload:
+          #   "PROBE-explicit-via-api-trigger"      → passed params ARE echoed
+          #   "PROBE-8f3d-look-for-me-in-the-webhook" → config default (push build)
+          #   neither                                → params not echoed (expected)
+          # Remove after the experiment concludes.
           BODY=$(jq -cn \
             --arg tag "$RC_TAG" \
             --arg repo "$PRODUCT_REPO" \
-            '{tag:$tag, parameters:{CALLBACK_PRODUCT_REPO:$repo, CALLBACK_RC_TAG:$tag}}')
+            '{tag:$tag, parameters:{CALLBACK_PRODUCT_REPO:$repo, CALLBACK_RC_TAG:$tag, WEBHOOK_PROBE:"PROBE-explicit-via-api-trigger"}}')
 
           # -f makes the step fail on any 4xx/5xx from the API.
           curl -fsS -X POST \
