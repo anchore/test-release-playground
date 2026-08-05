@@ -1,0 +1,81 @@
+# Scenario-2 test driver: opens a PR against main authored by the default
+# GITHUB_TOKEN, then you merge it by hand.
+#
+# Why: we're testing whether merging a PR to main runs workflows on main, and
+# how that depends on *who* merges. This driver deliberately opens the PR with
+# GITHUB_TOKEN, which demonstrates two things at once:
+#
+#   Scenario 1 (feature branch): because the PR is authored by GITHUB_TOKEN,
+#   GitHub's anti-recursion rule suppresses pull_request/push CI on the branch.
+#   The PR's checks tab stays empty.
+#
+#   Scenario 2 (main): you then click "Merge" by hand. That merge is attributed
+#   to YOU (a human), so the resulting push to main IS a triggering event and
+#   merge-sensor.yaml fires. (Had automation merged this with GITHUB_TOKEN
+#   instead, the sensor would NOT fire — that's the "depends who merges" point.)
+#
+# Usage: Actions tab -> "merge-test: open PR (GITHUB_TOKEN)" -> Run workflow.
+# Then open the created PR and click Merge, and watch for a merge-sensor run.
+
+name: "merge-test: open PR (GITHUB_TOKEN)"
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # push the test branch
+      pull-requests: write   # open the PR
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Open a PR authored by GITHUB_TOKEN
+        env:
+          # The default token on purpose — this is what makes the PR
+          # GITHUB_TOKEN-authored and thus CI-suppressed on the branch.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+          BRANCH="merge-test/${RUN_ID}"
+          MARKER=".github/merge-test/run-${RUN_ID}.txt"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          mkdir -p "$(dirname "$MARKER")"
+          printf 'merge-test run %s\n' "$RUN_ID" > "$MARKER"
+          git add "$MARKER"
+          git commit -m "merge-test: run ${RUN_ID}"
+
+          # Push the branch with the token fed to git over a pipe by a credential
+          # helper (single-quoted, so the value expands from the env at push time
+          # and never lands in argv or .git/config). Same pattern as
+          # release-integrations.yaml.
+          git -c credential.helper= \
+              -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+              push origin "$BRANCH"
+
+          # gh reads GH_TOKEN, so the PR is created via the API as GITHUB_TOKEN.
+          URL=$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "merge-test: run ${RUN_ID} (opened by GITHUB_TOKEN)" \
+            --body $'Opened by `GITHUB_TOKEN`, so **no CI runs on this branch** (scenario 1 — check the empty status list).\n\nNow click **Merge** by hand: the merge is attributed to you (a human), so the push to `main` triggers workflows on main. Watch for a **merge-sensor** run in the Actions tab (scenario 2).')
+
+          {
+            echo "## merge-test PR opened 📬"
+            echo ""
+            echo "- PR: ${URL}"
+            echo "- branch: \`${BRANCH}\`"
+            echo ""
+            echo "Next: open the PR, confirm the checks list is **empty** (scenario 1),"
+            echo "then click **Merge** and watch for a **merge-sensor** run (scenario 2)."
+          } >> "$GITHUB_STEP_SUMMARY"
