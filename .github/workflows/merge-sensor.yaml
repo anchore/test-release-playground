@@ -1,6 +1,6 @@
 # Scenario-2 sensor: proves that a PR merged to main runs workflows on main.
 #
-# Fires on push to main, but only for commits touching .github/merge-test/**, so
+# Fires on push to main, but only for commits touching test/merge-test/**, so
 # a run here is unambiguously the result of merging a merge-test PR (opened by
 # merge-test-open-pr.yaml) rather than unrelated main activity.
 #
@@ -19,7 +19,7 @@ on:
     branches:
       - main
     paths:
-      - ".github/merge-test/**"
+      - "test/merge-test/**"
 
 permissions: {}
 

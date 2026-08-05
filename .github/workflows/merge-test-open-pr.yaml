@@ -44,7 +44,7 @@ jobs:
         run: |
           set -eu
           BRANCH="merge-test/${RUN_ID}"
-          MARKER=".github/merge-test/run-${RUN_ID}.txt"
+          MARKER="test/merge-test/run-${RUN_ID}.txt"
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
