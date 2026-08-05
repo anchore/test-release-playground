@@ -1,0 +1,52 @@
+# Scenario-2 sensor: proves that a PR merged to main runs workflows on main.
+#
+# Fires on push to main, but only for commits touching .github/merge-test/**, so
+# a run here is unambiguously the result of merging a merge-test PR (opened by
+# merge-test-open-pr.yaml) rather than unrelated main activity.
+#
+# When you click "Merge" on a merge-test PR, the merge is attributed to you (a
+# human), so this push-triggered workflow runs — even though the PR itself was
+# opened by GITHUB_TOKEN and got no CI on its branch.
+#
+# Contrast: had automation merged the PR using GITHUB_TOKEN instead of a human
+# clicking Merge, this workflow would NOT run (GitHub's anti-recursion rule).
+# That's the "depends who merges" nuance made observable.
+
+name: merge-sensor
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/merge-test/**"
+
+permissions: {}
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Report the push that triggered this run
+        # Values are passed through env (not interpolated into the script) to
+        # avoid template-injection — the pattern zizmor expects.
+        env:
+          ACTOR: ${{ github.actor }}
+          PUSHER: ${{ github.event.pusher.name }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          {
+            echo "## merge-sensor fired 🎯"
+            echo ""
+            echo "A push to main triggered a workflow — scenario 2 confirmed."
+            echo ""
+            echo "- event: \`${EVENT}\`"
+            echo "- attributed actor: \`${ACTOR}\`  ← the human who clicked Merge"
+            echo "- pusher: \`${PUSHER}\`"
+            echo "- sha: \`${SHA}\`"
+            echo "- head commit message: ${MSG}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "merge-sensor ran on main — push attributed to ${ACTOR}"
