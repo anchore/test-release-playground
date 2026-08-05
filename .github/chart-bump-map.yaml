@@ -1,0 +1,7 @@
+# Prototype mirror of anchore-charts/.github/chart-bump-map.yaml. This sandbox
+# has no real charts, so `chart` just names the stand-in marker file that
+# helm-pr.yaml writes. See the real map for the full schema (chart + optional
+# image override).
+
+test-release-playground:
+  chart: test-release-playground

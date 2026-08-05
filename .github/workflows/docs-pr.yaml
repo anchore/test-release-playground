@@ -1,36 +1,182 @@
-# Dummy release-note PR opener for the release-pipeline sandbox loop.
+# Sandbox prototype of enterprise-docs/.github/workflows/docs-pr.yaml.
 #
-# Dispatched by the release automation's GA handler, alongside helm-pr.yaml,
-# when this repo publishes a GA Release. Inputs match that handler's dispatch
-# payload.
+# Unlike a pure stand-in, this runs the REAL clone-and-bump logic against a
+# small fixture docs tree checked into this repo at test/docs/release_notes/
+# (one product note + one enterprise note with a component table). So the full
+# flow is exercised end to end here: resolve product -> notes dir, clone the
+# product's newest note and bump version/weight/chart version, update the
+# enterprise "Recommended Component Versions" table row, and open a PR.
 #
-# In production this workflow would live on the docs repo and open a real PR
-# that adds a release note. Here it just echoes.
+# The only difference from the real workflow is the RN base path (the sandbox
+# fixture vs content/docs/release_notes) — the generation logic is identical.
+#
+# Key design (same as the real one): the PR is opened with the default
+# GITHUB_TOKEN, so it is authored by github-actions[bot] and its CI is held for
+# maintainer approval — the intended human-in-the-loop. A person clicks
+# "Approve and run", reviews, then merges. No pr-broker, no PAT, no GitHub App.
+#
+# Dispatched manually here (in enterprise-docs the release Lambda dispatches it).
+# It ONLY opens a PR — it does not merge. Best-effort: the chart version is a
+# patch-bump guess and Improvements is the standard line, for the reviewer to
+# confirm.
 
 name: docs-pr
-
-permissions: {}
 
 on:
   workflow_dispatch:
     inputs:
       product:
-        description: product repo the GA release originated from
+        description: product repo the GA release originated from (mapped product, e.g. test-release-playground)
         required: true
       version:
-        description: GA version (no v prefix)
+        description: GA version, no v prefix (e.g. 1.3.0)
         required: true
 
+permissions: {}
+
 jobs:
-  simulate-release-note:
+  open-notes-pr:
     runs-on: ubuntu-24.04
-    permissions: {}
+    permissions:
+      contents: write        # push the notes branch
+      pull-requests: write   # open the PR
+    env:
+      PRODUCT: ${{ inputs.product }}
+      VERSION: ${{ inputs.version }}
+      # The default token. The PR it creates is authored by github-actions[bot],
+      # so the PR's CI is approval-gated — a maintainer clicks "Approve and run".
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Simulate opening a release-note PR
-        env:
-          PRODUCT: ${{ inputs.product }}
-          VERSION: ${{ inputs.version }}
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Generate release note + update enterprise table
+        id: notes
         run: |
-          echo "sandbox docs-pr: would open a release-note PR"
-          echo "  product: ${PRODUCT}"
-          echo "  version: ${VERSION}"
+          set -euo pipefail
+          VERSION="${VERSION#v}"                 # tolerate a v-prefixed input
+          MAP=".github/release-notes-map.yaml"
+          RN="test/docs/release_notes"           # sandbox fixture (real repo: content/docs/release_notes)
+
+          # Resolve product repo -> release-notes dir.
+          DIR=$(PRODUCT="$PRODUCT" yq -e '.[strenv(PRODUCT)].dir' "$MAP" 2>/dev/null) || {
+            echo "product '${PRODUCT}' is not in ${MAP} — add an entry to onboard it" >&2
+            exit 1
+          }
+
+          # newest_note <dir> -> "<minweight>|<file>" (excludes _index.md; newest
+          # note carries the lowest weight in this repo's scheme).
+          newest_note() {
+            local d="$1" minw=1000000 base="" f w
+            for f in "$d"/*.md; do
+              [ "$(basename "$f")" = "_index.md" ] && continue
+              w=$(awk '/^weight:/{print $2; exit}' "$f"); [ -z "$w" ] && continue
+              if [ "$w" -lt "$minw" ]; then minw=$w; base=$f; fi
+            done
+            echo "${minw}|${base}"
+          }
+          bump_patch() { local v="${1#v}" a b c; IFS=. read -r a b c <<<"$v"; echo "v${a}.${b}.$((c+1))"; }
+
+          # ---- 1) new per-product note: clone newest, mutate ----
+          NOTE_DIR="${RN}/${DIR}"
+          IFS='|' read -r MINW BASE <<<"$(newest_note "$NOTE_DIR")"
+          if [ -z "$BASE" ]; then
+            echo "no existing note in ${NOTE_DIR} to clone — seed the first note by hand" >&2
+            exit 1
+          fi
+          NEWW=$((MINW - 1))
+          OLDVER=$(awk -F'"' '/^linkTitle:/{print $2; exit}' "$BASE")
+          NEWFILE="${NOTE_DIR}/$(echo "$VERSION" | tr -d '.').md"
+          oe=${OLDVER//./\\.}
+
+          cp "$BASE" "$NEWFILE"
+          sed -i -E "s/(title: \".*Version )${oe}\"/\1${VERSION}\"/" "$NEWFILE"
+          sed -i -E "s/(linkTitle: \")${oe}\"/\1${VERSION}\"/" "$NEWFILE"
+          sed -i -E "s/^(##.* v)${oe}[[:space:]]*$/\1${VERSION}/" "$NEWFILE"
+          sed -i -E "s#(/tag/v)${oe}#\1${VERSION}#g" "$NEWFILE"
+          sed -i -E "s/^weight: .*/weight: ${NEWW}/" "$NEWFILE"
+          CURCHART=$(grep -oE 'helm chart `v[0-9]+\.[0-9]+\.[0-9]+`' "$NEWFILE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -n "$CURCHART" ]; then
+            NEWCHART=$(bump_patch "$CURCHART")
+            sed -i -E "s/(helm chart \`)${CURCHART//./\\.}(\`)/\1${NEWCHART}\2/" "$NEWFILE"
+          fi
+          awk '
+            /^#### Improvements/ { print; print ""; print "- Various supporting packages have been updated in order to improve security."; print ""; skip=1; next }
+            skip && /^#### / { skip=0 }
+            skip { next }
+            { print }
+          ' "$NEWFILE" > "${NEWFILE}.tmp" && mv "${NEWFILE}.tmp" "$NEWFILE"
+
+          # ---- 2) enterprise "Recommended Component Versions" table row ----
+          IFS='|' read -r _ ENT <<<"$(newest_note "${RN}/enterprise")"
+          TABLE="skipped (no row for anchore/${PRODUCT})"
+          if [ -n "$ENT" ] && grep -q "anchore/${PRODUCT}>" "$ENT"; then
+            awk -v prod="$PRODUCT" -v ver="v${VERSION}" '
+              BEGIN{ FS="|"; OFS="|" }
+              $0 ~ ("anchore/" prod ">") && /^\|/ {
+                $3=" " ver " "
+                hc=$4; gsub(/ /,"",hc)
+                if (hc ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {
+                  n=split(substr(hc,2),a,"."); $4=" v" a[1] "." a[2] "." (a[3]+1) " "
+                }
+                print; next
+              }
+              { print }
+            ' "$ENT" > "${ENT}.tmp" && mv "${ENT}.tmp" "$ENT"
+            TABLE="updated ${ENT##*/}"
+          fi
+
+          {
+            echo "note_file=${NEWFILE}"
+            echo "version=${VERSION}"
+            echo "table=${TABLE}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "--- new note ---"; git --no-pager diff --no-index /dev/null "$NEWFILE" || true
+          echo "--- enterprise table ---"; git --no-pager diff -- "$ENT" || true
+
+      - name: Open pull request
+        env:
+          NOTE_FILE: ${{ steps.notes.outputs.note_file }}
+          APP_VERSION: ${{ steps.notes.outputs.version }}
+          TABLE: ${{ steps.notes.outputs.table }}
+        run: |
+          set -euo pipefail
+          BRANCH="auto/docs-${PRODUCT}-${APP_VERSION}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes produced for ${PRODUCT} ${APP_VERSION}; nothing to open."
+            exit 0
+          fi
+          git commit -m "docs(${PRODUCT}): release notes for ${APP_VERSION} (prototype)"
+
+          # Feed the token to git via a credential helper (single-quoted: the
+          # literal $GH_TOKEN is stored, the helper expands it from the env at
+          # push time, so it never lands in argv or .git/config).
+          git -c credential.helper= \
+              -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+              push --force-with-lease origin "$BRANCH"
+
+          printf '%s\n' \
+            "Prototype release-note PR for **${PRODUCT}** ${APP_VERSION} (runs the real clone-and-bump against the sandbox fixture docs)." \
+            "" \
+            "- Added \`${NOTE_FILE}\` (cloned from the previous note; version + weight + chart version updated)." \
+            "- Enterprise component table: ${TABLE}." \
+            "" \
+            "Opened by the release automation (github-actions[bot]). Its CI is held for approval — click **Approve and run**, review, then merge. **Not auto-merged.**" \
+            > /tmp/pr-body.md
+
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "PR for $BRANCH already exists; branch updated (approval re-arms)."
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "docs(${PRODUCT}): release notes for ${APP_VERSION} (prototype)" \
+              --body-file /tmp/pr-body.md
+          fi

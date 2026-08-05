@@ -1,0 +1,8 @@
+# Prototype mirror of enterprise-docs/.github/release-notes-map.yaml. `dir` is
+# the release-notes directory under the sandbox fixture tree
+# test/docs/release_notes/ (the real repo uses content/docs/release_notes/).
+# docs-pr.yaml clones + bumps the newest note in that dir. See the real map for
+# the full schema.
+
+test-release-playground:
+  dir: test-release-playground

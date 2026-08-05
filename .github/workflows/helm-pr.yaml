@@ -1,37 +1,98 @@
-# Dummy chart-bump PR opener for the release-pipeline sandbox loop.
+# Sandbox prototype of anchore-charts/.github/workflows/helm-pr.yaml.
 #
-# Dispatched by the release automation's GA handler when this repo (acting as
-# the sandbox's stand-in for a real product repo) publishes a GA Release.
-# Inputs (`product`, `version`) are exactly what that handler sends.
+# Mirrors the real chart-bump PR opener so the token + approval mechanics can be
+# exercised here before they matter in anchore-charts. The real one bumps
+# stable/<product>/Chart.yaml + values.yaml; this repo has no charts, so the
+# prototype writes a stand-in marker instead — enough to produce a reviewable PR.
 #
-# In production this workflow would live on the Helm chart repo and open a
-# real PR that bumps the chart's appVersion. Here it just echoes what it would
-# do — enough to prove the GA dispatch fired.
+# Key design (same as the real one): the PR is opened with the default
+# GITHUB_TOKEN, so it is authored by github-actions[bot]. GitHub holds a
+# bot-authored PR's CI (validations / validate-github-actions) for maintainer
+# approval — that approval gate IS the human-in-the-loop we want. A person
+# clicks "Approve and run" to run the checks, reviews, then merges by hand.
+# No pr-broker, no PAT, no GitHub App.
+#
+# Dispatched manually here (in anchore-charts the release Lambda dispatches it).
+# It ONLY opens a PR — it does not merge and does not release.
 
 name: helm-pr
-
-permissions: {}
 
 on:
   workflow_dispatch:
     inputs:
       product:
-        description: product repo the GA release originated from
+        description: product repo the GA release originated from (e.g. k8s-inventory)
         required: true
       version:
-        description: GA version (no v prefix)
+        description: GA version, no v prefix (e.g. 1.8.5)
         required: true
 
+permissions: {}
+
 jobs:
-  simulate-chart-bump:
+  open-bump-pr:
     runs-on: ubuntu-24.04
-    permissions: {}
+    permissions:
+      contents: write        # push the bump branch
+      pull-requests: write   # open the PR
+    env:
+      PRODUCT: ${{ inputs.product }}
+      VERSION: ${{ inputs.version }}
+      # The default token. The PR it creates is authored by github-actions[bot],
+      # so the PR's CI is approval-gated — a maintainer clicks "Approve and run".
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Simulate opening a chart-bump PR
-        env:
-          PRODUCT: ${{ inputs.product }}
-          VERSION: ${{ inputs.version }}
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Open a bump PR (prototype)
         run: |
-          echo "sandbox helm-pr: would open a Helm chart bump PR"
-          echo "  product: ${PRODUCT}"
-          echo "  version: ${VERSION}"
+          set -euo pipefail
+          VERSION="${VERSION#v}"                 # tolerate a v-prefixed input
+          MAP=".github/chart-bump-map.yaml"
+
+          # Resolve product repo -> chart via the same map anchore-charts uses.
+          # Fails loudly on an unmapped product (mirrors the real workflow).
+          CHART=$(PRODUCT="$PRODUCT" yq -e '.[strenv(PRODUCT)].chart' "$MAP" 2>/dev/null) || {
+            echo "product '${PRODUCT}' is not in ${MAP} — add an entry to onboard it" >&2
+            exit 1
+          }
+          BRANCH="auto/bump-${CHART}-${VERSION}"
+
+          # Stand-in for the real chart edit: this repo has no charts, so record
+          # the resolved bump in a marker file — enough for a reviewable PR. In
+          # anchore-charts this step edits stable/<chart>/{Chart.yaml,values.yaml}.
+          MARKER="test/helm-pr/${CHART}.txt"
+          mkdir -p "$(dirname "$MARKER")"
+          printf 'chart: %s\nappVersion: %s\n' "$CHART" "$VERSION" > "$MARKER"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "$MARKER"
+          git commit -m "chore(${PRODUCT}): bump to ${VERSION} (prototype)"
+
+          # Feed the token to git via a credential helper (single-quoted: the
+          # literal $GH_TOKEN is stored, the helper expands it from the env at
+          # push time, so it never lands in argv or .git/config).
+          git -c credential.helper= \
+              -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+              push --force-with-lease origin "$BRANCH"
+
+          printf '%s\n' \
+            "Prototype chart bump for **${PRODUCT}** ${VERSION}." \
+            "" \
+            "Opened by the release automation (github-actions[bot]). Its CI is held for approval — click **Approve and run** to run the checks, then review and merge. **Not auto-merged.**" \
+            > /tmp/pr-body.md
+
+          # Reuse an existing open PR for this branch if a prior run created one.
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "PR for $BRANCH already exists; branch updated (approval re-arms)."
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(${PRODUCT}): bump to ${VERSION} (prototype)" \
+              --body-file /tmp/pr-body.md
+          fi
