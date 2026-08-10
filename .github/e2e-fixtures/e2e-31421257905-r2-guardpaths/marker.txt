@@ -1,0 +1,1 @@
+e2e marker for [e2e-31421257905-r2-guardpaths] -- triggers sensitive-paths guard
