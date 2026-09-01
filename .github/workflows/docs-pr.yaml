@@ -51,19 +51,39 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pin yq rather than rely on the runner image (mirrors the real workflow).
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.53.3
+          YQ_SHA256: fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
       - name: Generate release note + update enterprise table
         id: notes
         run: |
           set -euo pipefail
           VERSION="${VERSION#v}"                 # tolerate a v-prefixed input
+          # Validate dispatch inputs early — manual runs can send anything, and
+          # both get interpolated into paths, filenames and sed/grep/awk patterns.
+          [[ "$PRODUCT" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid product name: '${PRODUCT}'" >&2; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version (expected N.N.N): '${VERSION}'" >&2; exit 1; }
           MAP=".github/release-notes-map.yaml"
           RN="test/docs/release_notes"           # sandbox fixture (real repo: content/docs/release_notes)
+          command -v yq >/dev/null 2>&1 || { echo "yq not found on PATH" >&2; exit 1; }
+          [ -f "$MAP" ] || { echo "release-notes map not found: ${MAP}" >&2; exit 1; }
 
           # Resolve product repo -> release-notes dir.
-          DIR=$(PRODUCT="$PRODUCT" yq -e '.[strenv(PRODUCT)].dir' "$MAP" 2>/dev/null) || {
-            echo "product '${PRODUCT}' is not in ${MAP} — add an entry to onboard it" >&2
+          # yq stderr kept so real errors surface; `// ""` = clean "not mapped".
+          DIR=$(PRODUCT="$PRODUCT" yq -r '.[strenv(PRODUCT)].dir // ""' "$MAP")
+          if [ -z "$DIR" ]; then
+            echo "product '${PRODUCT}' has no dir mapping in ${MAP} — add an entry to onboard it" >&2
             exit 1
-          }
+          fi
 
           # newest_note <dir> -> "<minweight>|<file>" (excludes _index.md; newest
           # note carries the lowest weight in this repo's scheme).
@@ -111,10 +131,13 @@ jobs:
           # ---- 2) enterprise "Recommended Component Versions" table row ----
           IFS='|' read -r _ ENT <<<"$(newest_note "${RN}/enterprise")"
           TABLE="skipped (no row for anchore/${PRODUCT})"
-          if [ -n "$ENT" ] && grep -q "anchore/${PRODUCT}>" "$ENT"; then
-            awk -v prod="$PRODUCT" -v ver="v${VERSION}" '
+          # Match the row by LITERAL substring (grep -F / index()) — PRODUCT is
+          # never put into a regex — so a metacharacter in a product name can't
+          # match the wrong row.
+          if [ -n "$ENT" ] && grep -qF "anchore/${PRODUCT}>" "$ENT"; then
+            awk -v needle="anchore/${PRODUCT}>" -v ver="v${VERSION}" '
               BEGIN{ FS="|"; OFS="|" }
-              $0 ~ ("anchore/" prod ">") && /^\|/ {
+              index($0, needle) > 0 && /^\|/ {
                 $3=" " ver " "
                 hc=$4; gsub(/ /,"",hc)
                 if (hc ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {
@@ -129,6 +152,7 @@ jobs:
 
           {
             echo "note_file=${NEWFILE}"
+            echo "ent_file=${ENT}"
             echo "version=${VERSION}"
             echo "table=${TABLE}"
           } >> "$GITHUB_OUTPUT"
@@ -139,16 +163,24 @@ jobs:
       - name: Open pull request
         env:
           NOTE_FILE: ${{ steps.notes.outputs.note_file }}
+          ENT_FILE: ${{ steps.notes.outputs.ent_file }}
           APP_VERSION: ${{ steps.notes.outputs.version }}
           TABLE: ${{ steps.notes.outputs.table }}
         run: |
           set -euo pipefail
           BRANCH="auto/docs-${PRODUCT}-${APP_VERSION}"
+          # The PRODUCT allowlist still permits values that are invalid git ref
+          # components (e.g. `..` or a `.lock` suffix); validate the computed
+          # branch so a bad ref fails clearly here, not with a cryptic checkout error.
+          git check-ref-format "refs/heads/${BRANCH}" \
+            || { echo "computed branch name is not a valid git ref: '${BRANCH}'" >&2; exit 1; }
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add -A
+          # Stage ONLY the files this workflow writes — never `git add -A`.
+          git add "$NOTE_FILE"
+          if [ -n "$ENT_FILE" ]; then git add "$ENT_FILE"; fi
           if git diff --cached --quiet; then
             echo "no changes produced for ${PRODUCT} ${APP_VERSION}; nothing to open."
             exit 0
@@ -158,6 +190,13 @@ jobs:
           # Feed the token to git via a credential helper (single-quoted: the
           # literal $GH_TOKEN is stored, the helper expands it from the env at
           # push time, so it never lands in argv or .git/config).
+          # Fetch the PR branch into its remote-tracking ref first: checkout does
+          # a shallow single-branch fetch, so without this --force-with-lease has
+          # no lease ref and a repeat run (branch already exists) is rejected as
+          # "stale info". Absent on the first run, hence `|| true`.
+          git -c credential.helper= \
+              -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+              fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" || true
           git -c credential.helper= \
               -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
               push --force-with-lease origin "$BRANCH"
