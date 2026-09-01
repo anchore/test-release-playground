@@ -1,34 +1,31 @@
-# Dummy CircleCI SETUP pipeline for the release-pipeline sandbox loop.
+# Dummy CircleCI pipeline for the release-pipeline sandbox loop.
 #
-# This is a dynamic-config *setup* pipeline. It mirrors the real e2e project's
-# shape so the sandbox reproduces the exact multi-workflow situation production
-# has: a setup-stage workflow (`passthrough`) that continues into a *named*
-# suite workflow (see continue_config.yml). BOTH workflows complete and BOTH
-# emit CircleCI's native workflow-completed webhook for the same pipeline —
-# carrying the same CALLBACK_* params. The release automation must therefore
-# dispatch the GA exactly ONCE: it ignores the `passthrough` setup workflow by
-# name (github-listener .../handler/circleci setupWorkflowNames) and acts only
-# on the named suite workflow's completion. This config exists to exercise that
-# dedup end-to-end in the sandbox.
+# Reproduces the exact situation that caused the k8s-inventory double GA
+# dispatch: one pipeline that completes TWO workflows — a setup-stage workflow
+# named `passthrough` and a named suite workflow (`fake-e2e`) — each firing
+# CircleCI's native workflow-completed webhook carrying the same CALLBACK_*
+# params. The release automation must dispatch GA exactly ONCE: it ignores the
+# `passthrough` name (github-listener .../handler/circleci setupWorkflowNames)
+# and acts only on the named suite workflow.
+#
+# Why two plain workflows in ONE static config instead of a real
+# setup+continuation split: the automation keys purely off the workflow NAME in
+# the webhook, so two same-pipeline workflows named `passthrough` and `fake-e2e`
+# are indistinguishable from the real dynamic-config setup — and this needs no
+# checkout SSH key, no continuation orb, and no "Dynamic config using setup
+# workflows" project toggle. (The real e2e project gets its two workflows from
+# dynamic config; the sandbox just declares them directly.) Note: neither job
+# runs `checkout` — the sandbox project has no checkout key, and nothing here
+# needs the repo contents.
 #
 # Triggered via API by trigger-circleci-e2e.yaml after a pre-release is
 # published, passing the CALLBACK_* pipeline parameters below.
-#
-# Requires "Dynamic config using setup workflows" enabled in Project Settings →
-# Advanced. Without it this runs as a normal config and the continuation never
-# fires.
 version: 2.1
 
-setup: true
-
-orbs:
-  continuation: circleci/continuation@1.0.0
-
 parameters:
-  # Set by trigger-circleci-e2e.yaml's API trigger. Declared here (the config
-  # actually triggered) AND mirrored in continue_config.yml so they propagate
-  # through the continuation. Empty defaults let the pipeline be re-run manually
-  # without accidentally firing a callback.
+  # Set by trigger-circleci-e2e.yaml's API trigger; read back by the release
+  # automation via CircleCI's pipeline values API. Empty defaults let the
+  # pipeline be re-run manually without firing a spurious callback.
   CALLBACK_PRODUCT_REPO:
     type: string
     default: ""
@@ -37,29 +34,48 @@ parameters:
     default: ""
 
 jobs:
+  # Stand-in for the setup-stage `passthrough` job. Intentionally trivial and
+  # does NOT checkout — it exists only so its workflow completes and fires a
+  # workflow-completed webhook the automation must IGNORE (proving the dedup).
   passthrough:
     docker:
       - image: cimg/base:stable
     resource_class: small
     steps:
-      - checkout
-      # The API-supplied pipeline parameters already propagate into the
-      # continuation automatically. Passing a `parameters:` block here would be
-      # rejected with "Conflicting pipeline parameters." — so there isn't one.
-      - continuation/continue:
-          configuration_path: .circleci/continue_config.yml
+      - run:
+          name: Setup-stage placeholder (no-op)
+          command: |
+            echo "sandbox passthrough: setup-stage stand-in, nothing to do"
+
+  fake-e2e:
+    docker:
+      - image: cimg/base:stable
+    resource_class: small
+    steps:
+      - run:
+          name: Simulated e2e test (always passes)
+          command: |
+            echo "sandbox e2e: pretending to test << pipeline.parameters.CALLBACK_PRODUCT_REPO >> at << pipeline.parameters.CALLBACK_RC_TAG >>"
 
 workflows:
-  # Setup-stage workflow. Named `passthrough` to mirror the real e2e project's
-  # setup workflow — the release automation skips this name, so its
-  # workflow-completed webhook does NOT trigger a (duplicate) GA. Only the
-  # continuation's named suite workflow drives GA.
+  # Setup-stage stand-in. Named `passthrough` to mirror the real e2e project's
+  # setup workflow — the automation SKIPS this name, so its completion must NOT
+  # trigger a GA.
   passthrough:
     jobs:
       # tags are opt-in: circleci runs no workflow for a tag-triggered pipeline
       # unless the jobs carry tag filters, which otherwise shows up as a
       # pipeline stuck at "created" with no workflow.
       - passthrough:
+          filters:
+            tags:
+              only: /^v.*/
+
+  # Named suite workflow (mirrors k8s-inventory / ecs-inventory). The automation
+  # acts on THIS workflow's completion to dispatch the GA.
+  fake-e2e:
+    jobs:
+      - fake-e2e:
           filters:
             tags:
               only: /^v.*/
