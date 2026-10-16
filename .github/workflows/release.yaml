@@ -66,7 +66,7 @@ jobs:
           persist-credentials: true
 
       - name: Bootstrap environment
-        uses: anchore/go-make/.github/actions/setup@39fe5f71112d4dceb3ff0a92a40f272f067fc457 # v0.6.0
+        uses: anchore/go-make/.github/actions/setup@9eb7f3a610b354fe29225a1bc8934a5a7ed4e07c # v0.9.2
 
       - name: Build & publish release artifacts
         run: make ci-release
