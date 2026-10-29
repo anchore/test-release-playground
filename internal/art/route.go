@@ -59,6 +59,9 @@ var peeringCities = []city{
 	{"Mexico City", "MX", "mex", 19.4, -99.1},
 }
 
+// sanFrancisco hosts several of the destinations below.
+var sanFrancisco = city{"San Francisco", "US", "sfo", 37.8, -122.4}
+
 // destinations is the menu of plausible targets for the simulated tour.
 // One is picked at random when --destination isn't supplied.
 var destinations = []struct {
@@ -66,17 +69,17 @@ var destinations = []struct {
 	city city
 }{
 	{"github.com", city{"Ashburn", "US", "iad", 39.0, -77.5}},
-	{"www.cloudflare.com", city{"San Francisco", "US", "sfo", 37.8, -122.4}},
+	{"www.cloudflare.com", sanFrancisco},
 	{"www.bbc.co.uk", city{"London", "GB", "lhr", 51.5, -0.1}},
 	{"www.nhk.or.jp", city{"Tokyo", "JP", "nrt", 35.7, 139.7}},
 	{"abc.net.au", city{"Sydney", "AU", "syd", -33.9, 151.2}},
 	{"www.bund.de", city{"Berlin", "DE", "ber", 52.5, 13.4}},
 	{"www.gob.mx", city{"Mexico City", "MX", "mex", 19.4, -99.1}},
 	{"www.gov.za", city{"Pretoria", "ZA", "prt", -25.7, 28.2}},
-	{"news.ycombinator.com", city{"San Francisco", "US", "sfo", 37.8, -122.4}},
+	{"news.ycombinator.com", sanFrancisco},
 	{"www.amazon.in", city{"Mumbai", "IN", "bom", 19.1, 72.9}},
 	{"www.gov.br", city{"Brasília", "BR", "bsb", -15.8, -47.9}},
-	{"www.reddit.com", city{"San Francisco", "US", "sfo", 37.8, -122.4}},
+	{"www.reddit.com", sanFrancisco},
 }
 
 // hop is one step of the simulated route.
